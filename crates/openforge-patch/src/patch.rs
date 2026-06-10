@@ -220,7 +220,7 @@ pub fn rules() -> Vec<PatchRule> {
             find: "Seems like CurseForge has crashed unexpectedly",
             replace: "Seems like OpenForge has crashed unexpectedly",
             is_regex: false,
-            min_hits: 1, max_hits: 2,
+            min_hits: 0, max_hits: 2,
             target_globs: &["dist/desktop/desktop.js"],
         },
         PatchRule {

@@ -211,6 +211,11 @@ where
         .context("failed to resolve install parent")?
         .to_path_buf();
     fs::create_dir_all(&install_parent)?;
+
+    progress(0.05, "Removing existing CurseForge / OpenForge");
+    stop_running_clients();
+    clean_slate_remove(&install_root, &install_parent);
+
     fs::create_dir_all(&install_root)?;
 
     let work_root = base.join("_installer_work");
@@ -619,6 +624,19 @@ fn run_setup_for_target(setup_exe: &std::path::Path, target: &std::path::Path) -
         anyhow::bail!("setup finished but app.asar not found at {}", target.display());
     }
     Ok(())
+}
+
+fn clean_slate_remove(install_root: &std::path::Path, install_parent: &std::path::Path) {
+    let targets = [
+        install_root.to_path_buf(),
+        install_root.with_extension("backup_openforge"),
+        install_parent.join("OpenForge"),
+    ];
+    for t in targets {
+        if t.exists() {
+            let _ = fs::remove_dir_all(&t);
+        }
+    }
 }
 
 fn stop_running_clients() {

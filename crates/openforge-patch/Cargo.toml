@@ -33,3 +33,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+embed-manifest = "1"
