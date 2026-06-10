@@ -84,8 +84,12 @@ fn main() -> Result<()> {
             .ok()
             .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
         {
-            if exe_name.to_ascii_lowercase().contains("installer") {
+            let stem = exe_name.to_ascii_lowercase();
+            if stem.contains("installer") {
                 return run_installer_mode();
+            }
+            if stem.contains("launcher") {
+                return run_launcher_mode();
             }
         }
     }
@@ -275,8 +279,13 @@ where
     replace_install_with_backup(&install_root, &patched_out)?;
 
     let exe_path = install_root.join("CurseForge.exe");
+    let launcher_path = install_root.join("OpenForgeLauncher.exe");
+    if let Ok(self_exe) = std::env::current_exe() {
+        let _ = fs::copy(&self_exe, &launcher_path);
+    }
     if exe_path.is_file() {
-        let _ = create_shortcuts(&exe_path);
+        let shortcut_target = if launcher_path.is_file() { &launcher_path } else { &exe_path };
+        let _ = create_shortcuts(shortcut_target, &exe_path);
         let _ = launch_detached(&exe_path);
     }
 
@@ -306,6 +315,76 @@ fn launch_detached(exe_path: &std::path::Path) -> Result<()> {
 fn launch_detached(exe_path: &std::path::Path) -> Result<()> {
     let _ = Command::new(exe_path).spawn()
         .with_context(|| format!("launch {}", exe_path.display()))?;
+    Ok(())
+}
+
+fn run_launcher_mode() -> Result<()> {
+    let self_exe = std::env::current_exe().context("get launcher exe path")?;
+    let install_root = self_exe
+        .parent()
+        .context("resolve install dir from launcher")?
+        .to_path_buf();
+    let asar_path = install_root.join("resources").join("app.asar");
+    let cf_exe = install_root.join("CurseForge.exe");
+
+    if asar_path.is_file() && !asar_is_patched(&asar_path).unwrap_or(true) {
+        if let Err(e) = repatch_in_place(&install_root) {
+            eprintln!("OpenForge: re-patch skipped ({})", e);
+        }
+    }
+
+    if !cf_exe.is_file() {
+        anyhow::bail!(
+            "CurseForge.exe not found next to launcher at {}",
+            install_root.display()
+        );
+    }
+    launch_detached(&cf_exe)
+}
+
+fn asar_is_patched(asar_path: &std::path::Path) -> Result<bool> {
+    let data = fs::read(asar_path).with_context(|| format!("read {}", asar_path.display()))?;
+    Ok(find_subslice(&data, b"OpenForge").is_some())
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn repatch_in_place(install_root: &std::path::Path) -> Result<()> {
+    let asar_path = install_root.join("resources").join("app.asar");
+    let cf_exe = install_root.join("CurseForge.exe");
+    if !asar_path.is_file() {
+        anyhow::bail!("app.asar missing at {}", asar_path.display());
+    }
+
+    let old_hash = asar::hash_header_sha256(&asar_path)?;
+
+    let work_root = install_root.join("_openforge_relaunch");
+    let work = work_root.join("app");
+    if work_root.exists() {
+        fs::remove_dir_all(&work_root)?;
+    }
+    asar::extract_all(&asar_path, &work)?;
+
+    let report = patch::apply_all(&work, false)?;
+    if !report.failed.is_empty() {
+        let _ = fs::remove_dir_all(&work_root);
+        anyhow::bail!("{} patch rule(s) failed", report.failed.len());
+    }
+
+    asar::pack(&work, &asar_path)?;
+    let new_hash = asar::hash_header_sha256(&asar_path)?;
+    if cf_exe.is_file() {
+        if new_hash != old_hash {
+            let _ = integrity::patch_exe_hash(&cf_exe, &old_hash, &new_hash);
+        }
+        let _ = fuses::flip_for_portable(&cf_exe);
+    }
+    let _ = fs::remove_dir_all(&work_root);
     Ok(())
 }
 
@@ -557,7 +636,7 @@ fn stop_running_clients() {
         .status();
 }
 
-fn create_shortcuts(target_exe: &std::path::Path) -> Result<()> {
+fn create_shortcuts(target_exe: &std::path::Path, icon_source: &std::path::Path) -> Result<()> {
     let user_profile = std::env::var_os("USERPROFILE").context("USERPROFILE not set")?;
     let appdata = std::env::var_os("APPDATA").context("APPDATA not set")?;
     let public = std::env::var_os("PUBLIC");
@@ -575,8 +654,8 @@ fn create_shortcuts(target_exe: &std::path::Path) -> Result<()> {
         let _ = cleanup_existing_shortcuts(&public_desktop);
     }
 
-    write_shortcut_via_powershell(&desktop, target_exe)?;
-    write_shortcut_via_powershell(&start_menu, target_exe)?;
+    write_shortcut_via_powershell(&desktop, target_exe, icon_source)?;
+    write_shortcut_via_powershell(&start_menu, target_exe, icon_source)?;
     Ok(())
 }
 
@@ -599,9 +678,10 @@ fn cleanup_existing_shortcuts(dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn write_shortcut_via_powershell(link_path: &std::path::Path, target_exe: &std::path::Path) -> Result<()> {
+fn write_shortcut_via_powershell(link_path: &std::path::Path, target_exe: &std::path::Path, icon_source: &std::path::Path) -> Result<()> {
     let link = link_path.to_string_lossy().replace('"', "`\"");
     let target = target_exe.to_string_lossy().replace('"', "`\"");
+    let icon = icon_source.to_string_lossy().replace('"', "`\"");
     let workdir = target_exe
         .parent()
         .map(|p| p.to_string_lossy().replace('"', "`\""))
@@ -612,7 +692,7 @@ fn write_shortcut_via_powershell(link_path: &std::path::Path, target_exe: &std::
         link,
         target,
         workdir,
-        target
+        icon
     );
 
     let status = Command::new("powershell")
