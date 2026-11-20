@@ -9,14 +9,7 @@ There are MULTIPLE telemetry, advertisement, and data scrape endpoints that poin
 ## Requirements
 - Windows 10 or later
 - Rust (cargo)
-
-## Crates
-
-| Crate             | Purpose                                                                 |
-|-------------------|-------------------------------------------------------------------------|
-| `openforge`       | The client library + `openforge` CLI and `openforge-gui` binaries       |
-| `openforge-patch` | Patches the `.ASAR` and removes the Ads and more.    |
-
+  
 ## Build
 
 ```sh
